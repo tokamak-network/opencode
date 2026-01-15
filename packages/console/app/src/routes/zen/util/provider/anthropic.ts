@@ -208,6 +208,47 @@ export function fromAnthropicRequest(body: any): CommonRequest {
   }
 }
 
+// Helper function to estimate input tokens (rough approximation)
+function estimateTokenCount(body: CommonRequest): number {
+  let totalChars = 0
+
+  // Count system messages
+  if (Array.isArray(body.messages)) {
+    for (const msg of body.messages) {
+      if (typeof (msg as any).content === "string") {
+        totalChars += (msg as any).content.length
+      } else if (Array.isArray((msg as any).content)) {
+        for (const part of (msg as any).content) {
+          if ((part as any).type === "text" && typeof (part as any).text === "string") {
+            totalChars += (part as any).text.length
+          }
+          // Images typically use ~1000-2000 tokens, use conservative estimate
+          if ((part as any).type === "image_url") {
+            totalChars += 2000 * 4 // Approximate 2000 tokens as characters
+          }
+        }
+      }
+      // Tool calls
+      if (Array.isArray((msg as any).tool_calls)) {
+        for (const tc of (msg as any).tool_calls) {
+          if ((tc as any).function) {
+            totalChars += JSON.stringify((tc as any).function).length
+          }
+        }
+      }
+    }
+  }
+
+  // Count tools
+  if (Array.isArray(body.tools)) {
+    totalChars += JSON.stringify(body.tools).length
+  }
+
+  // Rough approximation: 1 token ≈ 4 characters for English
+  // Add 20% safety margin for encoding overhead
+  return Math.ceil((totalChars / 4) * 1.2)
+}
+
 export function toAnthropicRequest(body: CommonRequest) {
   if (!body || typeof body !== "object") return body
 
@@ -339,8 +380,31 @@ export function toAnthropicRequest(body: CommonRequest) {
     return undefined
   })()
 
+  // Dynamically calculate max_tokens based on input size
+  const calculateMaxTokens = () => {
+    // If user explicitly specified max_tokens, respect it
+    if (body.max_tokens !== undefined) {
+      return body.max_tokens
+    }
+
+    // Default context window for most Claude models (can be overridden by model config)
+    const DEFAULT_CONTEXT_WINDOW = 200_000
+    const DESIRED_MAX_OUTPUT = 32_000
+    const SAFETY_BUFFER = 2_000
+
+    // Estimate input tokens
+    const estimatedInputTokens = estimateTokenCount(body)
+
+    // Calculate available tokens for output
+    const availableTokens = DEFAULT_CONTEXT_WINDOW - estimatedInputTokens - SAFETY_BUFFER
+
+    // Return the smaller of desired max output or available tokens
+    // Also ensure minimum of 1000 tokens
+    return Math.max(1_000, Math.min(DESIRED_MAX_OUTPUT, availableTokens))
+  }
+
   return {
-    max_tokens: body.max_tokens ?? 32_000,
+    max_tokens: calculateMaxTokens(),
     temperature: body.temperature,
     top_p: body.top_p,
     system: system.length > 0 ? system : undefined,

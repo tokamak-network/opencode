@@ -127,6 +127,46 @@ export function fromOaCompatibleRequest(body: any): CommonRequest {
   }
 }
 
+// Helper function to estimate input tokens for OpenAI compatible models
+function estimateTokenCountOA(body: CommonRequest): number {
+  let totalChars = 0
+
+  // Count all messages
+  if (Array.isArray(body.messages)) {
+    for (const msg of body.messages) {
+      if (typeof msg.content === "string") {
+        totalChars += msg.content.length
+      } else if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part.type === "text" && typeof part.text === "string") {
+            totalChars += part.text.length
+          }
+          // Images typically use ~1000-2000 tokens
+          if (part.type === "image_url") {
+            totalChars += 2000 * 4
+          }
+        }
+      }
+      // Tool calls
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          if (tc.function) {
+            totalChars += JSON.stringify(tc.function).length
+          }
+        }
+      }
+    }
+  }
+
+  // Count tools
+  if (Array.isArray(body.tools)) {
+    totalChars += JSON.stringify(body.tools).length
+  }
+
+  // 1 token ≈ 4 characters, add 20% safety margin
+  return Math.ceil((totalChars / 4) * 1.2)
+}
+
 export function toOaCompatibleRequest(body: CommonRequest) {
   if (!body || typeof body !== "object") return body
 
@@ -196,9 +236,32 @@ export function toOaCompatibleRequest(body: CommonRequest) {
       }))
     : undefined
 
+  // Dynamically calculate max_tokens for OpenAI compatible models
+  const calculateMaxTokens = () => {
+    // If user explicitly specified max_tokens, respect it
+    if (body.max_tokens !== undefined) {
+      return body.max_tokens
+    }
+
+    // Default context window (131072 for qwen3-235b)
+    const DEFAULT_CONTEXT_WINDOW = 131_072
+    const DESIRED_MAX_OUTPUT = 32_000
+    const SAFETY_BUFFER = 2_000
+
+    // Estimate input tokens
+    const estimatedInputTokens = estimateTokenCountOA(body)
+
+    // Calculate available tokens for output
+    const availableTokens = DEFAULT_CONTEXT_WINDOW - estimatedInputTokens - SAFETY_BUFFER
+
+    // Return the smaller of desired max output or available tokens
+    // Ensure minimum of 1000 tokens
+    return Math.max(1_000, Math.min(DESIRED_MAX_OUTPUT, availableTokens))
+  }
+
   return {
     model: body.model,
-    max_tokens: body.max_tokens,
+    max_tokens: calculateMaxTokens(),
     temperature: body.temperature,
     top_p: body.top_p,
     stop: body.stop,

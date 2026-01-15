@@ -50,7 +50,9 @@ globalThis.AI_SDK_LOG_WARNINGS = false
 
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
-  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
+  // Reduced from 32_000 to 8_000 to safely avoid context window overflow
+  // This conservative value ensures we don't exceed context window even with large inputs
+  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 8_000
 
   const state = Instance.state(
     () => {
@@ -588,6 +590,24 @@ export namespace SessionPrompt {
       }
 
       await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
+
+      // Pre-check: estimate input tokens before API call to prevent context window overflow
+      const systemPrompts = [...(await SystemPrompt.environment()), ...(await SystemPrompt.custom())]
+      const modelMessages = MessageV2.toModelMessage(sessionMessages)
+      const estimatedTokens = LLM.estimateInputTokens(modelMessages, systemPrompts)
+      const contextLimit = model.limit.input || model.limit.context || 131072
+
+      if (estimatedTokens > contextLimit * 0.80) {
+        // Estimated tokens exceed 80% of context limit, trigger compaction early
+        log.info("pre-check overflow", { estimatedTokens, contextLimit })
+        await SessionCompaction.create({
+          sessionID,
+          agent: lastUser.agent,
+          model: lastUser.model,
+          auto: true,
+        })
+        continue
+      }
 
       const result = await processor.process({
         user: lastUser,

@@ -341,6 +341,21 @@ export namespace SessionProcessor {
               error: e,
               stack: JSON.stringify(e.stack),
             })
+
+            // Check for context window overflow error - trigger compaction instead of failing
+            const errorMessage = e?.message?.toLowerCase() || ""
+            const errorName = e?.name?.toLowerCase() || ""
+            if (
+              errorMessage.includes("context") ||
+              errorMessage.includes("max_tokens") ||
+              errorMessage.includes("token") ||
+              errorName.includes("contextwindow")
+            ) {
+              log.info("context window exceeded, triggering compaction")
+              needsCompaction = true
+              break
+            }
+
             const error = MessageV2.fromError(e, { providerID: input.model.providerID })
             const retry = SessionRetry.retryable(error)
             if (retry !== undefined) {

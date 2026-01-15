@@ -26,7 +26,40 @@ import { Auth } from "@/auth"
 export namespace LLM {
   const log = Log.create({ service: "llm" })
 
-  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
+  // Reduced from 32_000 to 8_000 to safely avoid context window overflow
+  // This conservative value ensures we don't exceed context window even with large inputs
+  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 8_000
+
+  // Helper function to estimate input tokens (rough approximation)
+  export function estimateInputTokens(messages: ModelMessage[], systemPrompt: string[]): number {
+    let totalChars = 0
+
+    // Count system messages
+    for (const sys of systemPrompt) {
+      totalChars += sys.length
+    }
+
+    // Count all messages
+    for (const msg of messages) {
+      if (typeof msg.content === "string") {
+        totalChars += msg.content.length
+      } else if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part.type === "text" && typeof part.text === "string") {
+            totalChars += part.text.length
+          }
+          // Images typically use ~1000-2000 tokens
+          if (part.type === "image") {
+            totalChars += 2000 * 4
+          }
+        }
+      }
+    }
+
+    // Very conservative: 1 token ≈ 2 characters, with 2x safety margin
+    // This overestimates tokens to prevent context window overflow
+    return Math.ceil(totalChars)
+  }
 
   export type StreamInput = {
     user: MessageV2.User
@@ -129,6 +162,10 @@ export namespace LLM {
       },
     )
 
+    // Estimate input tokens dynamically to avoid context window overflow
+    const estimatedInput = estimateInputTokens(input.messages, system)
+    const contextWindow = input.model.limit.input || 131072 // Default to 131k if not specified
+
     const maxOutputTokens = isCodex
       ? undefined
       : ProviderTransform.maxOutputTokens(
@@ -136,6 +173,8 @@ export namespace LLM {
           params.options,
           input.model.limit.output,
           OUTPUT_TOKEN_MAX,
+          contextWindow,
+          estimatedInput,
         )
 
     const tools = await resolveTools(input)
