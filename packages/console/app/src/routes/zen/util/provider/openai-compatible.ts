@@ -1,5 +1,44 @@
 import { ProviderHelper, CommonRequest, CommonResponse, CommonChunk } from "./provider"
 
+// Model limits for OpenAI-compatible models { context, output }
+const MODEL_LIMITS: Record<string, { context: number; output: number }> = {
+  // Tokamak AI - 131k context, 16k output
+  "tokamak": { context: 131_072, output: 16_384 },
+  // Qwen series - 131k context, 8k output
+  "qwen": { context: 131_072, output: 8_192 },
+  // DeepSeek series - 64k context, 8k output
+  "deepseek": { context: 64_000, output: 8_192 },
+  // Older Llama models - 8k
+  "llama3-70b-8192": { context: 8_192, output: 8_192 },
+  "llama3-8b-8192": { context: 8_192, output: 8_192 },
+  // Mistral smaller models - 32k
+  "mistral-medium": { context: 32_000, output: 8_192 },
+  "mistral-small": { context: 32_000, output: 8_192 },
+  "mixtral-8x7b": { context: 32_768, output: 8_192 },
+  "mistral-7b": { context: 32_768, output: 8_192 },
+  // Google Gemma - 8k
+  "gemma": { context: 8_192, output: 8_192 },
+  // xAI Grok - 131k context, 32k output
+  "grok": { context: 131_072, output: 32_768 },
+}
+
+const DEFAULT_LIMITS = { context: 128_000, output: 16_384 }
+
+function getModelLimits(model: string): { context: number; output: number } {
+  // Check exact match first
+  if (MODEL_LIMITS[model]) {
+    return MODEL_LIMITS[model]
+  }
+  // Check prefix/contains match
+  for (const [key, value] of Object.entries(MODEL_LIMITS)) {
+    if (model.startsWith(key) || model.includes(key)) {
+      return value
+    }
+  }
+  // Default for OpenAI-compatible models
+  return DEFAULT_LIMITS
+}
+
 type Usage = {
   prompt_tokens?: number
   completion_tokens?: number
@@ -243,20 +282,21 @@ export function toOaCompatibleRequest(body: CommonRequest) {
       return body.max_tokens
     }
 
-    // Default context window (131072 for qwen3-235b)
-    const DEFAULT_CONTEXT_WINDOW = 131_072
-    const DESIRED_MAX_OUTPUT = 32_000
+    // Get model-specific limits
+    const limits = getModelLimits(body.model)
+    const contextLimit = body.context_limit ?? limits.context
+    const maxOutput = limits.output
     const SAFETY_BUFFER = 2_000
 
     // Estimate input tokens
     const estimatedInputTokens = estimateTokenCountOA(body)
 
     // Calculate available tokens for output
-    const availableTokens = DEFAULT_CONTEXT_WINDOW - estimatedInputTokens - SAFETY_BUFFER
+    const availableTokens = contextLimit - estimatedInputTokens - SAFETY_BUFFER
 
-    // Return the smaller of desired max output or available tokens
+    // Return the smaller of model's max output or available tokens
     // Ensure minimum of 1000 tokens
-    return Math.max(1_000, Math.min(DESIRED_MAX_OUTPUT, availableTokens))
+    return Math.max(1_000, Math.min(maxOutput, availableTokens))
   }
 
   return {

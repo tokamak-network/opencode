@@ -99,6 +99,7 @@ export interface CommonUsage {
 export interface CommonRequest {
   model: string
   max_tokens?: number
+  context_limit?: number
   temperature?: number
   top_p?: number
   stop?: string | string[]

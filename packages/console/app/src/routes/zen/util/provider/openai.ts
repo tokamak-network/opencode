@@ -1,5 +1,36 @@
 import { ProviderHelper, CommonRequest, CommonResponse, CommonChunk } from "./provider"
 
+// Model limits for OpenAI models { context, output }
+const MODEL_LIMITS: Record<string, { context: number; output: number }> = {
+  // GPT-4 (non-turbo) - smaller context
+  "gpt-4": { context: 8_192, output: 8_192 },
+  "gpt-4-0613": { context: 8_192, output: 8_192 },
+  "gpt-4-32k": { context: 32_768, output: 32_768 },
+  "gpt-4-32k-0613": { context: 32_768, output: 32_768 },
+  // GPT-3.5
+  "gpt-3.5-turbo": { context: 16_385, output: 16_385 },
+  // O1/O3 series - larger context and output
+  "o1": { context: 200_000, output: 100_000 },
+  "o3-mini": { context: 200_000, output: 100_000 },
+}
+
+const DEFAULT_LIMITS = { context: 128_000, output: 16_384 }
+
+function getModelLimits(model: string): { context: number; output: number } {
+  // Check exact match first
+  if (MODEL_LIMITS[model]) {
+    return MODEL_LIMITS[model]
+  }
+  // Check prefix match for versioned models
+  for (const [key, value] of Object.entries(MODEL_LIMITS)) {
+    if (model.startsWith(key)) {
+      return value
+    }
+  }
+  // Default for OpenAI models
+  return DEFAULT_LIMITS
+}
+
 type Usage = {
   input_tokens?: number
   input_tokens_details?: {
@@ -355,20 +386,21 @@ export function toOpenaiRequest(body: CommonRequest) {
       return body.max_tokens
     }
 
-    // Default context window for GPT models
-    const DEFAULT_CONTEXT_WINDOW = 128_000
-    const DESIRED_MAX_OUTPUT = 32_000
+    // Get model-specific limits
+    const limits = getModelLimits(body.model)
+    const contextLimit = body.context_limit ?? limits.context
+    const maxOutput = limits.output
     const SAFETY_BUFFER = 2_000
 
     // Estimate input tokens
     const estimatedInputTokens = estimateTokenCountOpenAI(body)
 
     // Calculate available tokens for output
-    const availableTokens = DEFAULT_CONTEXT_WINDOW - estimatedInputTokens - SAFETY_BUFFER
+    const availableTokens = contextLimit - estimatedInputTokens - SAFETY_BUFFER
 
-    // Return the smaller of desired max output or available tokens
+    // Return the smaller of model's max output or available tokens
     // Ensure minimum of 1000 tokens
-    return Math.max(1_000, Math.min(DESIRED_MAX_OUTPUT, availableTokens))
+    return Math.max(1_000, Math.min(maxOutput, availableTokens))
   }
 
   return {

@@ -1,5 +1,13 @@
 import { ProviderHelper, CommonRequest, CommonResponse, CommonChunk } from "./provider"
 
+// Model limits for Anthropic models (all Claude models use 200k context, 8k output by default)
+const DEFAULT_LIMITS = { context: 200_000, output: 8_192 }
+
+function getModelLimits(_model: string): { context: number; output: number } {
+  // All Claude models have 200k context, 8k default output
+  return DEFAULT_LIMITS
+}
+
 type Usage = {
   cache_creation?: {
     ephemeral_5m_input_tokens?: number
@@ -387,20 +395,21 @@ export function toAnthropicRequest(body: CommonRequest) {
       return body.max_tokens
     }
 
-    // Default context window for most Claude models (can be overridden by model config)
-    const DEFAULT_CONTEXT_WINDOW = 200_000
-    const DESIRED_MAX_OUTPUT = 32_000
+    // Get model-specific limits
+    const limits = getModelLimits(body.model)
+    const contextLimit = body.context_limit ?? limits.context
+    const maxOutput = limits.output
     const SAFETY_BUFFER = 2_000
 
     // Estimate input tokens
     const estimatedInputTokens = estimateTokenCount(body)
 
     // Calculate available tokens for output
-    const availableTokens = DEFAULT_CONTEXT_WINDOW - estimatedInputTokens - SAFETY_BUFFER
+    const availableTokens = contextLimit - estimatedInputTokens - SAFETY_BUFFER
 
-    // Return the smaller of desired max output or available tokens
+    // Return the smaller of model's max output or available tokens
     // Also ensure minimum of 1000 tokens
-    return Math.max(1_000, Math.min(DESIRED_MAX_OUTPUT, availableTokens))
+    return Math.max(1_000, Math.min(maxOutput, availableTokens))
   }
 
   return {
