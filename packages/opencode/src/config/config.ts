@@ -1001,6 +1001,22 @@ export namespace Config {
         .object({
           auto: z.boolean().optional().describe("Enable automatic compaction when context is full (default: true)"),
           prune: z.boolean().optional().describe("Enable pruning of old tool outputs (default: true)"),
+          threshold: z
+            .number()
+            .min(0.5)
+            .max(0.99)
+            .optional()
+            .describe(
+              "Context usage threshold (0.5-0.99) to trigger auto-compaction. Default is 0.9 (90%). Higher values allow more context usage before compaction.",
+            ),
+          maxContext: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe(
+              "Maximum context tokens to use, overriding the model's default limit. Useful for cost control or limiting context size.",
+            ),
         })
         .optional(),
       experimental: z

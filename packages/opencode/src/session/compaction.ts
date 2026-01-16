@@ -30,11 +30,14 @@ export namespace SessionCompaction {
   export async function isOverflow(input: { tokens: MessageV2.Assistant["tokens"]; model: Provider.Model }) {
     const config = await Config.get()
     if (config.compaction?.auto === false) return false
-    const context = input.model.limit.context
-    if (context === 0) return false
+    const modelContext = input.model.limit.context
+    if (modelContext === 0) return false
+    // Apply maxContext if set, otherwise use model's limit
+    const maxContext = config.compaction?.maxContext
+    const context = maxContext ? Math.min(maxContext, modelContext) : modelContext
     const count = input.tokens.input + input.tokens.cache.read + input.tokens.output
     const output = Math.min(input.model.limit.output, SessionPrompt.OUTPUT_TOKEN_MAX) || SessionPrompt.OUTPUT_TOKEN_MAX
-    const usable = input.model.limit.input || context - output
+    const usable = input.model.limit.input ? Math.min(input.model.limit.input, context) : context - output
     return count > usable
   }
 

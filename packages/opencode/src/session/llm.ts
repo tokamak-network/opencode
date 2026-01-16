@@ -26,9 +26,7 @@ import { Auth } from "@/auth"
 export namespace LLM {
   const log = Log.create({ service: "llm" })
 
-  // Reduced from 32_000 to 8_000 to safely avoid context window overflow
-  // This conservative value ensures we don't exceed context window even with large inputs
-  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 8_000
+  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
 
   // Helper function to estimate input tokens (rough approximation)
   export function estimateInputTokens(messages: ModelMessage[], systemPrompt: string[]): number {

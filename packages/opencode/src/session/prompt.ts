@@ -32,6 +32,7 @@ import { ulid } from "ulid"
 import { spawn } from "child_process"
 import { Command } from "../command"
 import { $, fileURLToPath } from "bun"
+import { Config } from "../config/config"
 import { ConfigMarkdown } from "../config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/util/error"
@@ -50,9 +51,7 @@ globalThis.AI_SDK_LOG_WARNINGS = false
 
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
-  // Reduced from 32_000 to 8_000 to safely avoid context window overflow
-  // This conservative value ensures we don't exceed context window even with large inputs
-  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 8_000
+  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
 
   const state = Instance.state(
     () => {
@@ -595,11 +594,20 @@ export namespace SessionPrompt {
       const systemPrompts = [...(await SystemPrompt.environment()), ...(await SystemPrompt.custom())]
       const modelMessages = MessageV2.toModelMessage(sessionMessages)
       const estimatedTokens = LLM.estimateInputTokens(modelMessages, systemPrompts)
-      const contextLimit = model.limit.input || model.limit.context || 131072
 
-      if (estimatedTokens > contextLimit * 0.80) {
-        // Estimated tokens exceed 80% of context limit, trigger compaction early
-        log.info("pre-check overflow", { estimatedTokens, contextLimit })
+      // Get config options
+      const cfg = await Config.get()
+      const compactionThreshold = cfg.compaction?.threshold ?? 0.9
+      const maxContext = cfg.compaction?.maxContext
+      const modelContextLimit = model.limit.input || model.limit.context
+      // Skip pre-check if no context limit defined
+      if (!modelContextLimit) continue
+      // Apply maxContext if set, otherwise use model's limit
+      const contextLimit = maxContext ? Math.min(maxContext, modelContextLimit) : modelContextLimit
+
+      if (estimatedTokens > contextLimit * compactionThreshold) {
+        // Estimated tokens exceed threshold of context limit, trigger compaction early
+        log.info("pre-check overflow", { estimatedTokens, contextLimit, maxContext, threshold: compactionThreshold })
         await SessionCompaction.create({
           sessionID,
           agent: lastUser.agent,

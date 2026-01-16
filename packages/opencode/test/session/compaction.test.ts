@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
 import { SessionCompaction } from "../../src/session/compaction"
+import { LLM } from "../../src/session/llm"
 import { Token } from "../../src/util/token"
 import { Instance } from "../../src/project/instance"
 import { Log } from "../../src/util/log"
@@ -141,6 +142,75 @@ describe("session.compaction.isOverflow", () => {
         const model = createModel({ context: 100_000, output: 32_000 })
         const tokens = { input: 75_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
         expect(await SessionCompaction.isOverflow({ tokens, model })).toBe(false)
+      },
+    })
+  })
+
+  test("respects maxContext when set lower than model context", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            compaction: { maxContext: 50_000 },
+          }),
+        )
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // Model has 200k context, but maxContext limits to 50k
+        const model = createModel({ context: 200_000, output: 32_000 })
+        // 30k tokens would be fine for 200k context, but exceeds 50k - 32k = 18k usable
+        const tokens = { input: 20_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(await SessionCompaction.isOverflow({ tokens, model })).toBe(true)
+      },
+    })
+  })
+
+  test("uses model context when maxContext is higher", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            compaction: { maxContext: 500_000 },
+          }),
+        )
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // maxContext is 500k but model only has 100k
+        const model = createModel({ context: 100_000, output: 32_000 })
+        const tokens = { input: 75_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        // Should still overflow based on model's 100k limit
+        expect(await SessionCompaction.isOverflow({ tokens, model })).toBe(true)
+      },
+    })
+  })
+
+  test("maxContext works with input limit", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            compaction: { maxContext: 100_000 },
+          }),
+        )
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // Model has input limit of 272k, but maxContext is 100k
+        const model = createModel({ context: 400_000, input: 272_000, output: 128_000 })
+        // 90k tokens would be fine for 272k input limit, but should respect maxContext
+        const tokens = { input: 90_000, output: 10_000, reasoning: 0, cache: { read: 5_000, write: 0 } }
+        expect(await SessionCompaction.isOverflow({ tokens, model })).toBe(true)
       },
     })
   })
@@ -289,5 +359,58 @@ describe("session.getUsage", () => {
     })
 
     expect(result.cost).toBe(3 + 1.5)
+  })
+})
+
+describe("LLM.estimateInputTokens", () => {
+  test("estimates tokens from string content messages", () => {
+    const messages = [
+      { role: "user" as const, content: "x".repeat(1000) },
+      { role: "assistant" as const, content: "y".repeat(500) },
+    ]
+    const systemPrompt = ["z".repeat(200)]
+    const result = LLM.estimateInputTokens(messages, systemPrompt)
+    // Total chars: 1000 + 500 + 200 = 1700
+    expect(result).toBe(1700)
+  })
+
+  test("estimates tokens from array content messages", () => {
+    const messages = [
+      {
+        role: "user" as const,
+        content: [{ type: "text" as const, text: "x".repeat(800) }],
+      },
+    ]
+    const systemPrompt: string[] = []
+    const result = LLM.estimateInputTokens(messages, systemPrompt)
+    expect(result).toBe(800)
+  })
+
+  test("estimates tokens for images", () => {
+    const messages = [
+      {
+        role: "user" as const,
+        content: [
+          { type: "text" as const, text: "describe this" },
+          { type: "image" as const, image: new URL("https://example.com/img.png") },
+        ],
+      },
+    ]
+    const systemPrompt: string[] = []
+    const result = LLM.estimateInputTokens(messages, systemPrompt)
+    // "describe this" (13 chars) + image (2000 * 4 = 8000 chars)
+    expect(result).toBe(13 + 8000)
+  })
+
+  test("handles empty messages", () => {
+    const result = LLM.estimateInputTokens([], [])
+    expect(result).toBe(0)
+  })
+
+  test("handles multiple system prompts", () => {
+    const messages: { role: "user" | "assistant"; content: string }[] = []
+    const systemPrompt = ["prompt1".repeat(100), "prompt2".repeat(50)]
+    const result = LLM.estimateInputTokens(messages, systemPrompt)
+    expect(result).toBe(700 + 350)
   })
 })
